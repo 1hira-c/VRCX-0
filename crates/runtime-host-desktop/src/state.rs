@@ -218,6 +218,10 @@ pub struct DesktopRuntimeHostState {
     webhook_transport: vrcx_0_outbound_adapters::LocalNotificationWebhookTransport,
 }
 
+// Browser hosts share data facades, but local device work is owned by desktop agents.
+struct ServerRuntimeProfileExtension;
+impl vrcx_0_composition::RuntimeHostProfileExtension for ServerRuntimeProfileExtension {}
+
 struct DesktopRuntimeProfileExtension {
     game: Arc<GameRuntimeBundle>,
     desktop: Arc<DesktopRuntimeBundle>,
@@ -256,6 +260,16 @@ impl GameProcessEventSink for VrOverlayProcessSink {
 
 impl DesktopRuntimeHostState {
     pub fn new(options: DesktopRuntimeHostOptions) -> Result<Self> {
+        Self::build(options, false)
+    }
+
+    /// Reuse the UI-facing data services without starting local desktop/game services.
+    /// Device operations belong to a separately paired desktop agent in the Web host.
+    pub fn new_server(options: DesktopRuntimeHostOptions) -> Result<Self> {
+        Self::build(options, true)
+    }
+
+    fn build(options: DesktopRuntimeHostOptions, server: bool) -> Result<Self> {
         let DesktopRuntimeHostOptions {
             realtime_origin,
             launched_from_autostart,
@@ -298,8 +312,16 @@ impl DesktopRuntimeHostState {
             updater_port,
         );
         let extension = assembly::build_profile_extension(&builder, &game, &desktop);
-        let composition =
+        let mut composition =
             assembly::build_runtime_composition(&builder, &wiring, Arc::clone(&extension));
+        if server {
+            composition.profile_extension = Some(Arc::new(ServerRuntimeProfileExtension));
+            composition.local_game_context =
+                Arc::new(vrcx_0_application_core::UnavailableLocalGameContextSource);
+            composition.group_order_source =
+                Arc::new(vrcx_0_composition::UnavailableGroupOrderSource);
+            composition.friend_projection_observer = None;
+        }
         let runtime = builder.finish(composition)?;
         assembly::bind_realtime_runtime(&runtime, &wiring);
         let remote = assembly::remote::build_remote_runtimes(&runtime, &desktop.host_file_access);

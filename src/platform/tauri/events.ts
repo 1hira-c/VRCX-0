@@ -1,5 +1,7 @@
 import type { Event, UnlistenFn } from '@tauri-apps/api/event';
 
+import { isWeb } from '../web/environment';
+import { listenWeb } from '../web/events';
 import { normalizePlatformError } from './errors';
 
 export type TauriEventHandler<TPayload = unknown> = (payload: TPayload) => void;
@@ -13,6 +15,7 @@ const listeners = new Map<string, Set<TauriEventHandler>>();
 const tauriRegistrations = new Map<string, TauriEventRegistration>();
 
 async function loadListen() {
+    if (isWeb) return listenWeb;
     const event = await import('@tauri-apps/api/event');
     return event.listen;
 }

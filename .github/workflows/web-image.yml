@@ -1,0 +1,58 @@
+name: Web Image
+on:
+    push:
+        tags:
+            - 'web-v*'
+    workflow_dispatch:
+permissions:
+    contents: read
+    packages: write
+jobs:
+    image:
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - runner: ubuntu-24.04
+                      arch: amd64
+                    - runner: ubuntu-24.04-arm
+                      arch: aarch64
+        runs-on: ${{ matrix.runner }}
+        steps:
+            - uses: actions/checkout@v7
+            - name: Read and validate add-on version
+              id: release
+              shell: bash
+              run: |
+                  python3 - <<'PY'
+                  import os
+                  from pathlib import Path
+
+                  lines = Path('home-assistant/vrcx-0/config.yaml').read_text().splitlines()
+                  version = next(line.split(':', 1)[1].strip().strip("'\"") for line in lines if line.startswith('version:'))
+                  if os.environ['GITHUB_REF_TYPE'] == 'tag' and os.environ['GITHUB_REF_NAME'] != f'web-v{version}':
+                      raise SystemExit('Release tag must match the add-on version')
+                  with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+                      output.write(f'version={version}\n')
+                      output.write(f"owner={os.environ['GITHUB_REPOSITORY_OWNER'].lower()}\n")
+                  PY
+            - uses: docker/setup-buildx-action@v3
+            - uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ github.token }}
+            - uses: docker/build-push-action@v6
+              with:
+                  context: .
+                  push: true
+                  tags: ghcr.io/${{ steps.release.outputs.owner }}/vrcx-0-web-${{ matrix.arch }}:${{ steps.release.outputs.version }}
+                  labels: |
+                      io.hass.type=addon
+                      io.hass.name=VRCX-0 Web
+                      io.hass.version=${{ steps.release.outputs.version }}
+                      io.hass.arch=${{ matrix.arch }}
+                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
+                      org.opencontainers.image.revision=${{ github.sha }}
+                      org.opencontainers.image.version=${{ steps.release.outputs.version }}

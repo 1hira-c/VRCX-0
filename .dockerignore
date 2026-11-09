@@ -1,0 +1,9 @@
+.git
+node_modules
+target
+dist
+coverage
+.env
+.env.*
+*.log
+.vrcx-web-data

@@ -3,8 +3,7 @@ import {
     mkdir,
     readTextFile,
     writeTextFile
-} from '@tauri-apps/plugin-fs';
-
+} from '@/platform/cacheFiles';
 import { isRecord } from '@/shared/utils/record';
 
 import type { QuickSearchEntityType, QuickSearchResult } from '../quickSearch';

@@ -1,3 +1,5 @@
+> Web／HAOS対応の実験ブランチです。[起動手順と制限](docs/web.md)・[デスクトップエージェント連携設計](docs/desktop-agent.md)。
+
 <div align="center">
 
 # <img src="images/brand/VRCX-0.png" alt="VRCX-0 Logo" width="25"> VRCX-0

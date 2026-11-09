@@ -1,0 +1,37 @@
+.web-login {
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 24px;
+    background: #111820;
+    color: #edf2f7;
+    font-family: system-ui, sans-serif;
+}
+.web-login form {
+    width: min(100%, 480px);
+    display: grid;
+    gap: 16px;
+}
+.web-login h1 {
+    font-size: 28px;
+    font-weight: 700;
+}
+.web-login input {
+    padding: 12px;
+    border: 1px solid #8b9aab;
+    border-radius: 6px;
+    background: #1c2935;
+}
+.web-login button {
+    padding: 12px;
+    border-radius: 6px;
+    background: #2a79c2;
+    color: white;
+    cursor: pointer;
+}
+.web-login button:disabled {
+    opacity: 0.5;
+}
+.web-login [role='status'] {
+    color: #ffb0a8;
+}

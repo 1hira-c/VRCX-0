@@ -10,6 +10,15 @@ fn derive_key(machine_id: &str) -> [u8; 32] {
 }
 
 pub fn derive_secrets_key() -> Option<[u8; 32]> {
+    if let Some(path) = std::env::var_os("VRCX_0_SECRETS_KEY_FILE") {
+        return match std::fs::read_to_string(path) {
+            Ok(key) if key.trim().len() >= 32 => Some(derive_key(key.trim())),
+            _ => {
+                tracing::error!("persistent secrets key is missing or invalid");
+                None
+            }
+        };
+    }
     let machine_id = match machine_uid::get() {
         Ok(machine_id) => machine_id,
         Err(error) => {

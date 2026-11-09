@@ -1,0 +1,18 @@
+name: vrcx-0-web
+services:
+    vrcx:
+        build: .
+        image: vrcx-0-web:local
+        init: true
+        restart: unless-stopped
+        stop_grace_period: 30s
+        ports:
+            - '127.0.0.1:8080:8080'
+        volumes:
+            - vrcx-data:/data
+        environment:
+            VRCX_WEB_SECURE_COOKIE: '${VRCX_WEB_SECURE_COOKIE:-0}'
+        security_opt:
+            - no-new-privileges:true
+volumes:
+    vrcx-data:

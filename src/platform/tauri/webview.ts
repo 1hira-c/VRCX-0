@@ -1,5 +1,6 @@
 import type { Window as TauriWindow } from '@tauri-apps/api/window';
 
+import { isWeb } from '../web/environment';
 import { normalizePlatformError } from './errors';
 
 type WindowSizeInput = Parameters<TauriWindow['setSize']>[0];
@@ -112,11 +113,19 @@ async function loadCurrentWindow() {
 }
 
 export async function getCurrentWebviewWindow(): Promise<WebviewWindowLike> {
+    if (isWeb)
+        return {
+            setZoom: async (zoom) => {
+                document.documentElement.style.zoom = String(zoom);
+            },
+            scaleFactor: () => window.devicePixelRatio
+        };
     const getWindow = await loadCurrentWebviewWindow();
     return getWindow();
 }
 
 export async function getCurrentWindow(): Promise<WindowLike> {
+    if (isWeb) return {};
     const getWindow = await loadCurrentWindow();
     return getWindow();
 }
@@ -256,6 +265,7 @@ function toWindowWorkArea(monitor: {
 }
 
 export async function getWindowGeometry(): Promise<WindowGeometry | null> {
+    if (isWeb) return null;
     const module = await loadWindowModule();
     const current: WindowLike = module.getCurrentWindow();
     if (

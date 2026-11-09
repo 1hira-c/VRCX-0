@@ -1,3 +1,5 @@
+> Experimental Web / HAOS fork: [setup and limitations](docs/web.md), [desktop-agent design](docs/desktop-agent.md).
+
 <div align="center">
 
 # <img src="images/brand/VRCX-0.png" alt="VRCX-0 Logo" width="25"> VRCX-0

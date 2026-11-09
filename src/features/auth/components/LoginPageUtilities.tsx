@@ -1,6 +1,7 @@
 import { ArchiveRestoreIcon, DatabaseIcon, NetworkIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { isWeb } from '@/platform/web/environment';
 import { Button } from '@/ui/shadcn/button';
 import { Spinner } from '@/ui/shadcn/spinner';
 
@@ -22,6 +23,8 @@ export function LoginPageUtilities({
     showLegacyMigration
 }: LoginPageUtilitiesProps) {
     const { t } = useTranslation();
+    // Native backup/migration pickers and process restart are unavailable in a browser.
+    if (isWeb) return null;
 
     return (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">

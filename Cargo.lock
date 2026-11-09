@@ -3107,6 +3107,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "http-range-header"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9171a2ea8a68358193d15dd5d70c1c10a2afc3e7e4c5bc92bc9f025cebd7359c"
+
+[[package]]
 name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8866,6 +8872,11 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-range-header",
+ "httpdate",
+ "mime",
+ "mime_guess",
+ "percent-encoding",
  "pin-project-lite",
  "tokio",
  "tokio-util",
@@ -9969,6 +9980,46 @@ dependencies = [
  "url",
  "vrcx-0-contracts",
  "vrcx-0-core",
+]
+
+[[package]]
+name = "vrcx-0-web"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "futures-util",
+ "http-body-util",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "rustls",
+ "serde",
+ "serde_json",
+ "specta",
+ "syn 2.0.119",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "vrcx-0-application",
+ "vrcx-0-application-activity",
+ "vrcx-0-application-core",
+ "vrcx-0-application-game",
+ "vrcx-0-application-realtime",
+ "vrcx-0-assistant",
+ "vrcx-0-composition",
+ "vrcx-0-contracts",
+ "vrcx-0-core",
+ "vrcx-0-host-desktop",
+ "vrcx-0-integration-api",
+ "vrcx-0-local-server",
+ "vrcx-0-mcp",
+ "vrcx-0-persistence",
+ "vrcx-0-platform",
+ "vrcx-0-runtime-host-desktop",
 ]
 
 [[package]]

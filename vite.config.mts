@@ -108,13 +108,21 @@ export default defineConfig(({ mode }) => {
                 process.env['VRCX_0_BUILD_BADGE'] || ''
             ),
             VRCX_0_DISABLE_UPDATE_CHECK: JSON.stringify(
-                process.env['VRCX_0_DISABLE_UPDATE_CHECK'] === '1'
+                mode === 'web' ||
+                    process.env['VRCX_0_DISABLE_UPDATE_CHECK'] === '1'
             ),
             VRCX_0_MACOS_SYSTEM_FONTS_ENABLED: JSON.stringify(
                 macosSystemFontsEnabled
             )
         },
         server: {
+            proxy:
+                mode === 'web'
+                    ? {
+                          '/api': 'http://127.0.0.1:8080',
+                          '/healthz': 'http://127.0.0.1:8080'
+                      }
+                    : undefined,
             port: 9000,
             strictPort: true,
             watch: {

@@ -6,7 +6,9 @@ dist/
 # Tauri / Rust
 target/
 src-tauri/gen/
-docs/
+docs/*
+!docs/web.md
+!docs/desktop-agent.md
 src-tauri/resources/licenses/THIRD_PARTY_NOTICES.txt
 
 # Misc
@@ -21,3 +23,5 @@ scripts/package-windows-release.ps1
 .agents/
 .mcp.json
 tsconfig.tsbuildinfo
+
+.vrcx-web-data/

@@ -1,11 +1,11 @@
+import { create } from 'zustand';
+
 import {
     BaseDirectory,
     mkdir,
     readTextFile,
     writeTextFile
-} from '@tauri-apps/plugin-fs';
-import { create } from 'zustand';
-
+} from '@/platform/cacheFiles';
 import { isRecord } from '@/shared/utils/record';
 
 const CACHE_FILE = 'navigation-state.json';

@@ -20,9 +20,10 @@ use std::{
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, Semaphore};
+use tokio::sync::{broadcast, Notify, Semaphore};
 use tower_http::services::ServeDir;
-use vrcx_0_application_core::RuntimeEventSink;
+use vrcx_0_application::profile::{DatabaseUpgradeRunResult, DatabaseUpgradeRunStatus};
+use vrcx_0_application_core::{GuiRuntimeMode, RuntimeEventSink};
 use vrcx_0_local_server::{generate_token, tokens_match};
 
 const HOST_COMMANDS: &[&str] = &[
@@ -60,6 +61,7 @@ pub struct WebState {
     pub shutdown: tokio_util::sync::CancellationToken,
     auth: Arc<WebAuth>,
     requests: Arc<Semaphore>,
+    database_ready: Arc<Notify>,
 }
 struct WebSession {
     created: Instant,
@@ -84,7 +86,48 @@ impl WebState {
                 secure_cookie,
             }),
             requests: Arc::new(Semaphore::new(16)),
+            database_ready: Arc::new(Notify::new()),
         }
+    }
+
+    /// The process owns one startup task, which stays alive across recoverable DB failures.
+    pub async fn start_backend(&self) {
+        match self.upgrade_database(false).await {
+            Ok(result)
+                if matches!(
+                    result.status,
+                    DatabaseUpgradeRunStatus::Current | DatabaseUpgradeRunStatus::Upgraded
+                ) => {}
+            result => {
+                tracing::error!(?result, "Database startup needs attention in the browser");
+            }
+        }
+        // notify_one retains a permit if a browser retry completes before we start waiting.
+        self.database_ready.notified().await;
+        if let Err(error) = self
+            .runtime
+            .0
+            .start_gui_backend_runtime(GuiRuntimeMode::Background)
+            .await
+        {
+            tracing::warn!(%error, "Automatic login unavailable; sign in using the browser");
+        }
+    }
+
+    async fn upgrade_database(&self, retry: bool) -> Result<DatabaseUpgradeRunResult, AppError> {
+        let upgrade = self.runtime.0.database_upgrade();
+        let result = if retry {
+            upgrade.retry().await?
+        } else {
+            upgrade.run().await?
+        };
+        if matches!(
+            result.status,
+            DatabaseUpgradeRunStatus::Current | DatabaseUpgradeRunStatus::Upgraded
+        ) {
+            self.database_ready.notify_one();
+        }
+        Ok(result)
     }
 }
 struct WebEvents(broadcast::Sender<Value>);
@@ -273,11 +316,10 @@ async fn invoke(
     let Ok(permit) = state.requests.clone().try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
-    let runtime = state.runtime;
     let handle = tokio::runtime::Handle::current();
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
-        handle.block_on(dispatch(runtime, &command, args))
+        handle.block_on(dispatch(state, &command, args))
     })
     .await;
     match result {
@@ -286,8 +328,8 @@ async fn invoke(
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
-async fn dispatch(state: Arc<AppState>, command: &str, args: Value) -> Result<Value, AppError> {
-    let runtime = &state.0;
+async fn dispatch(state: WebState, command: &str, args: Value) -> Result<Value, AppError> {
+    let runtime = &state.runtime.0;
     Ok(match command {
         "app__append_error_log" => {
             let entry: String =
@@ -335,15 +377,11 @@ async fn dispatch(state: Arc<AppState>, command: &str, args: Value) -> Result<Va
         "app__database_upgrade_preflight" => {
             serde_json::to_value(runtime.database_upgrade().preflight().await?)?
         }
-        "app__database_upgrade_run" => {
-            serde_json::to_value(runtime.database_upgrade().run().await?)?
-        }
+        "app__database_upgrade_run" => serde_json::to_value(state.upgrade_database(false).await?)?,
         "app__database_upgrade_progress" => {
             serde_json::to_value(runtime.database_upgrade().progress())?
         }
-        "app__database_upgrade_retry" => {
-            serde_json::to_value(runtime.database_upgrade().retry().await?)?
-        }
+        "app__database_upgrade_retry" => serde_json::to_value(state.upgrade_database(true).await?)?,
         "app__database_upgrade_failure_log_path" => {
             json!(runtime.database_upgrade().failure_log_path())
         }
@@ -352,7 +390,7 @@ async fn dispatch(state: Arc<AppState>, command: &str, args: Value) -> Result<Va
             runtime.refresh_runtime_group_instances().await;
             Value::Null
         }
-        _ => return commands::dispatch(state, command, args).await,
+        _ => return commands::dispatch(state.runtime, command, args).await,
     })
 }
 async fn events(State(state): State<WebState>, headers: HeaderMap) -> Response {
@@ -476,23 +514,24 @@ mod http_tests {
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
+    use vrcx_0_application_core::{
+        BackendRuntimeAuthStatus, BackendRuntimeMode, BackendRuntimePhase,
+    };
     use vrcx_0_platform::app_paths::{AppDataDirResolution, AppDataDirSource};
     use vrcx_0_runtime_host_desktop::{DesktopRuntimeHostOptions, DesktopRuntimeHostState};
 
-    #[tokio::test(flavor = "multi_thread")]
-    async fn authentication_csrf_rpc_events_and_logout() {
+    fn test_runtime(dir: &std::path::Path) -> Arc<AppState> {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-        let dir = std::env::temp_dir().join(format!("vrcx-web-test-{}", generate_token().unwrap()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let runtime = Arc::new(AppState(
+        std::fs::create_dir_all(dir).unwrap();
+        Arc::new(AppState(
             DesktopRuntimeHostState::new_server(DesktopRuntimeHostOptions {
                 realtime_origin: "http://localhost:9000".into(),
                 launched_from_autostart: false,
                 app_data_dir: AppDataDirResolution {
-                    current_dir: dir.clone(),
-                    default_dir: dir.clone(),
+                    current_dir: dir.to_path_buf(),
+                    default_dir: dir.to_path_buf(),
                     persisted_dir: None,
-                    cli_dir: Some(dir.clone()),
+                    cli_dir: Some(dir.to_path_buf()),
                     source: AppDataDirSource::Cli,
                 },
                 app_version: "test".into(),
@@ -500,11 +539,155 @@ mod http_tests {
                 app_update_build_badge: String::new(),
                 app_update_check_disabled: true,
                 updater_port: Arc::new(vrcx_0_application_core::NoopUpdaterPort),
-                database_maintenance_cache_dir: None,
+                database_maintenance_cache_dir: Some(dir.join("maintenance-cache")),
                 task_executor: Arc::new(crate::executor::TokioRuntimeTaskExecutor),
             })
             .unwrap(),
-        ));
+        ))
+    }
+
+    async fn upgrade_request(app: Router, command: &str) -> Value {
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/invoke/{command}"))
+                    .header("content-type", "application/json")
+                    .header("x-vrcx-web", "1")
+                    .header("cookie", "vrcx0_session=upgrade-test")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap()
+    }
+
+    fn upgrade_router(state: &WebState, dir: PathBuf) -> Router {
+        state.auth.sessions.lock().unwrap().insert(
+            "upgrade-test".into(),
+            WebSession {
+                created: Instant::now(),
+                cookie_path: "/".into(),
+            },
+        );
+        router(state.clone(), dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browser_retry_resumes_services_after_failed_or_interrupted_upgrade() {
+        for failure in ["failed", "interrupted", "unreadable-status"] {
+            let dir = std::env::temp_dir()
+                .join(format!("vrcx-web-upgrade-{}", generate_token().unwrap()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let db = vrcx_0_persistence::DatabaseService::new(&dir.join("VRCX-0.sqlite3")).unwrap();
+            db.begin_upgrade_with_progress(0, 18, None, None, None, |_, _| {})
+                .unwrap();
+            if failure == "failed" {
+                db.fail_upgrade("injected upgrade failure".into()).unwrap();
+            }
+            drop(db);
+            if failure == "unreadable-status" {
+                std::fs::write(dir.join("db-upgrade/upgrade-active.json"), "{").unwrap();
+            }
+            let runtime = test_runtime(&dir);
+            let state = WebState::new(runtime.clone(), "test-token".into(), false);
+            let app = upgrade_router(&state, dir.clone());
+            let startup_state = state.clone();
+            let mut startup = tokio::spawn(async move { startup_state.start_backend().await });
+            let initial = upgrade_request(app.clone(), "app__database_upgrade_run").await;
+            assert_eq!(
+                initial["status"],
+                if failure == "unreadable-status" {
+                    "failed"
+                } else {
+                    "blocked"
+                }
+            );
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut startup)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(
+                runtime.0.backend_runtime_snapshot().phase,
+                BackendRuntimePhase::Idle
+            );
+            let checkpoint =
+                dir.join("maintenance-cache/database-maintenance/wal-checkpoint-last-attempt.txt");
+            assert!(!checkpoint.exists());
+
+            // Two browser tabs may retry together. Both must release the same startup task.
+            let (first, second) = tokio::join!(
+                upgrade_request(app.clone(), "app__database_upgrade_retry"),
+                upgrade_request(app.clone(), "app__database_upgrade_retry")
+            );
+            assert_eq!(first["status"], "upgraded");
+            assert_eq!(second["status"], "upgraded");
+            tokio::time::timeout(Duration::from_secs(5), startup)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                runtime.0.backend_runtime_snapshot().auth_status,
+                BackendRuntimeAuthStatus::Error
+            );
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while !checkpoint.exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+
+            // Further successful run/retry requests must not restart login or reset its mode.
+            runtime
+                .0
+                .set_gui_backend_runtime_mode(GuiRuntimeMode::Foreground);
+            upgrade_request(app.clone(), "app__database_upgrade_run").await;
+            upgrade_request(app.clone(), "app__database_upgrade_retry").await;
+            assert_eq!(
+                runtime.0.backend_runtime_snapshot().mode,
+                BackendRuntimeMode::Foreground
+            );
+            drop(app);
+            runtime.0.stop_for_application_exit("test", || {});
+            drop(state);
+            drop(runtime);
+            std::fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn successful_upgrade_before_startup_wait_is_not_lost() {
+        let dir =
+            std::env::temp_dir().join(format!("vrcx-web-ready-{}", generate_token().unwrap()));
+        let runtime = test_runtime(&dir);
+        let state = WebState::new(runtime.clone(), "test-token".into(), false);
+        let app = upgrade_router(&state, dir.clone());
+        assert_eq!(
+            upgrade_request(app.clone(), "app__database_upgrade_run").await["status"],
+            "upgraded"
+        );
+        tokio::time::timeout(Duration::from_secs(5), state.start_backend())
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.0.backend_runtime_snapshot().auth_status,
+            BackendRuntimeAuthStatus::Error
+        );
+        drop(app);
+        runtime.0.stop_for_application_exit("test", || {});
+        drop(state);
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn authentication_csrf_rpc_events_and_logout() {
+        let dir = std::env::temp_dir().join(format!("vrcx-web-test-{}", generate_token().unwrap()));
+        let runtime = test_runtime(&dir);
         let state = WebState::new(
             runtime.clone(),
             "a-test-access-token-at-least-32-characters".into(),

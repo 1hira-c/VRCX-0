@@ -4,7 +4,7 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use vrcx_0_application_core::{GuiRuntimeMode, NoopUpdaterPort};
+use vrcx_0_application_core::NoopUpdaterPort;
 use vrcx_0_platform::app_paths::resolve_app_data_dir;
 use vrcx_0_runtime_host_desktop::{DesktopRuntimeHostOptions, DesktopRuntimeHostState};
 use vrcx_0_web::executor;
@@ -61,27 +61,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let address = std::env::var("VRCX_WEB_LISTEN").unwrap_or_else(|_| "127.0.0.1:8080".into());
     let listener = tokio::net::TcpListener::bind(&address).await?;
     tracing::info!(%address, "VRCX-0 Web is listening");
-    let startup = runtime.clone();
+    let startup = state.clone();
     let restore = tokio::spawn(async move {
-        use vrcx_0_application::profile::DatabaseUpgradeRunStatus;
-        match startup.0.database_upgrade().run().await {
-            Ok(result)
-                if matches!(
-                    result.status,
-                    DatabaseUpgradeRunStatus::Current | DatabaseUpgradeRunStatus::Upgraded
-                ) => {}
-            result => {
-                tracing::error!(?result, "Database startup needs attention in the browser");
-                return;
-            }
-        }
-        if let Err(error) = startup
-            .0
-            .start_gui_backend_runtime(GuiRuntimeMode::Background)
-            .await
-        {
-            tracing::warn!(%error, "Automatic login unavailable; sign in using the browser");
-        }
+        startup.start_backend().await;
     });
     let cancellation = state.shutdown.clone();
     axum::serve(listener, router(state, static_dir))
@@ -91,6 +73,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     restore.abort();
+    // Finish cancelling startup before shutting down services, including a pending DB retry.
+    let _ = restore.await;
     tokio::task::spawn_blocking(move || runtime.0.stop_for_application_exit("web-shutdown", || {}))
         .await?;
     Ok(())

@@ -52,11 +52,11 @@ are invalidated on restart. Protect profile backups as credentials.
 
 ## HAOS
 
-Version 0.1.0 images for amd64 and aarch64 are published on GHCR and can be pulled
+Version 0.1.1 images for amd64 and aarch64 are published on GHCR and can be pulled
 without authentication. See [add-on instructions](../home-assistant/vrcx-0/DOCS.md).
 
 For maintainers: pushing a tag matching
-`web-v<add-on version>` (initially `web-v0.1.0`) runs the Web Image workflow and
+`web-v<add-on version>` (for example `web-v0.1.1`) runs the Web Image workflow and
 publishes native amd64/aarch64 images. The workflow rejects mismatched versions.
 Make both GHCR packages public before installation. Manual dispatch is also
 available once the workflow definition exists on the default branch. Packaging follows the official

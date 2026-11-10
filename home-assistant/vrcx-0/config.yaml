@@ -3,7 +3,7 @@ version: '0.1.2'
 slug: vrcx_0_web
 description: VRCX-0 in your browser, with a persistent Rust data runtime.
 stage: experimental
-url: https://github.com/1hira-c/VRCX-0/tree/codex/web-haos/home-assistant/vrcx-0
+url: https://github.com/1hira-c/VRCX-0/tree/web-haos/home-assistant/vrcx-0
 arch:
     - aarch64
     - amd64

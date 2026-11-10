@@ -2,7 +2,7 @@
 
 0.1.2の公開イメージ（amd64／aarch64）を使用します。HAOS上でビルドする必要はありません。
 
-1. アドオンリポジトリに `https://github.com/1hira-c/VRCX-0#codex/web-haos` を登録します。既定ブランチへ統合した場合は `#codex/web-haos` を外します（登録URLを変えると別アドオンとして扱われます）。
+1. アドオンリポジトリに `https://github.com/1hira-c/VRCX-0` を登録します。以前の `#codex/web-haos` 付きURLは更新されません（登録URLを変えると別アドオンとして扱われるため、入れ直しが必要です）。
 2. VRCX-0 Webをインストールし、開始します。
 3. 初回起動ログの `VRCX-0 Web access token:` に続くトークンを控えます。
 4. 「Web UIを開く」でトークンを入力します。その後、既存UIからVRChatにログインします（2FA対応）。

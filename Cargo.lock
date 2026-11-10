@@ -10020,6 +10020,7 @@ dependencies = [
  "vrcx-0-persistence",
  "vrcx-0-platform",
  "vrcx-0-runtime-host-desktop",
+ "vrcx-0-vrchat-client",
 ]
 
 [[package]]

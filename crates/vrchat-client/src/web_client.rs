@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io::Cursor;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use base64::{engine::general_purpose::STANDARD as B64, Engine};
 use cookie_store::{CookieStore, RawCookie};
@@ -12,7 +12,39 @@ use vrcx_0_core::vrchat_endpoints::{VRCHAT_CLOUD_ROOT_HOST, VRCHAT_SITE_HOST};
 use vrcx_0_core::{image_sniff::sniff_image_mime, proxy::with_remote_dns};
 
 pub type Result<T> = std::result::Result<T, WebClientError>;
-pub(crate) const BASE_USER_AGENT: &str = "VRCX-0";
+
+/// Identifies this build to VRChat and other remote services in `User-Agent`.
+///
+/// Distributions that are not the upstream desktop app (forks, alternative hosts)
+/// should set their own identity so remote services can tell them apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserAgentIdentity {
+    pub product: &'static str,
+    /// Optional `User-Agent` comment, e.g. a contact URL. Sent only to VRChat.
+    pub comment: Option<&'static str>,
+}
+
+impl UserAgentIdentity {
+    pub const DEFAULT: Self = Self {
+        product: "VRCX-0",
+        comment: None,
+    };
+}
+
+static USER_AGENT_IDENTITY: OnceLock<UserAgentIdentity> = OnceLock::new();
+
+/// Sets the process-wide `User-Agent` identity. Must be called before any client
+/// is built. Returns `false` if an identity was already set.
+pub fn set_user_agent_identity(identity: UserAgentIdentity) -> bool {
+    USER_AGENT_IDENTITY.set(identity).is_ok()
+}
+
+fn user_agent_identity() -> UserAgentIdentity {
+    USER_AGENT_IDENTITY
+        .get()
+        .copied()
+        .unwrap_or(UserAgentIdentity::DEFAULT)
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum WebClientError {
@@ -42,12 +74,20 @@ pub use crate::cookies::{
 pub use vrcx_0_contracts::{WebExecuteRequest, WebMultipartPart, WebUploadMode};
 
 pub(crate) fn build_vrcx_user_agent(app_version: &str) -> String {
+    format_user_agent(user_agent_identity(), app_version)
+}
+
+fn format_user_agent(identity: UserAgentIdentity, app_version: &str) -> String {
     let app_version = app_version.trim();
-    if app_version.is_empty() {
-        BASE_USER_AGENT.into()
+    let mut user_agent = if app_version.is_empty() {
+        identity.product.to_string()
     } else {
-        format!("{BASE_USER_AGENT}/{app_version}")
+        format!("{}/{app_version}", identity.product)
+    };
+    if let Some(comment) = identity.comment {
+        user_agent.push_str(&format!(" ({comment})"));
     }
+    user_agent
 }
 
 #[derive(Clone, Debug)]
@@ -484,9 +524,10 @@ impl WebClient {
         };
         let response_body_limit = request.response_body_limit;
         let mut http_request = self.build_standard_request_with(client, &mut request)?;
-        http_request
-            .headers_mut()
-            .insert(USER_AGENT, HeaderValue::from_static(BASE_USER_AGENT));
+        http_request.headers_mut().insert(
+            USER_AGENT,
+            HeaderValue::from_static(user_agent_identity().product),
+        );
         execute_request(client, http_request, response_body_limit).await
     }
 

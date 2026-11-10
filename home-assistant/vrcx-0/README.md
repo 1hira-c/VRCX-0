@@ -1,5 +1,7 @@
 # VRCX-0 Web (experimental)
 
+> **非公式フォーク**です。[VRCX-0](https://github.com/Map1en/VRCX-0) の上流プロジェクトとは無関係で、サポートも受けていません。不具合は[フォークの Issues](https://github.com/1hira-c/VRCX-0/issues) へ報告してください。
+
 VRCX-0の既存UIをブラウザーで操作し、Rustの本体をHAOS上で常時稼働させます。
 Home Assistantの「Web UIを開く」から接続できます。
 

@@ -1,4 +1,7 @@
-> Experimental Web / HAOS fork: [setup and limitations](docs/web.md), [desktop-agent design](docs/desktop-agent.md).
+> [!IMPORTANT]
+> **Unofficial fork.** This branch adds an experimental Web / Home Assistant OS host to [VRCX-0](https://github.com/Map1en/VRCX-0). It is not affiliated with, endorsed by, or supported by the upstream VRCX-0 project. Please report problems with the Web / HAOS build to [this fork's issues](https://github.com/1hira-c/VRCX-0/issues), not upstream.
+>
+> See [setup and limitations](docs/web.md) and the [desktop-agent design](docs/desktop-agent.md). The rest of this README describes upstream VRCX-0.
 
 <div align="center">
 

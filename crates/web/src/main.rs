@@ -7,6 +7,7 @@ use std::{
 use vrcx_0_application_core::NoopUpdaterPort;
 use vrcx_0_platform::app_paths::resolve_app_data_dir;
 use vrcx_0_runtime_host_desktop::{DesktopRuntimeHostOptions, DesktopRuntimeHostState};
+use vrcx_0_vrchat_client::web_client::{set_user_agent_identity, UserAgentIdentity};
 use vrcx_0_web::executor;
 use vrcx_0_web::{
     server::{router, WebState},
@@ -22,6 +23,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "vrcx_0=info".into()),
         )
         .init();
+    // This host is an unofficial fork; identify it separately from upstream VRCX-0.
+    set_user_agent_identity(UserAgentIdentity {
+        product: "VRCX-0-Web",
+        comment: Some("+https://github.com/1hira-c/VRCX-0"),
+    });
     while serve().await? {}
     Ok(())
 }

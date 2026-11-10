@@ -166,6 +166,22 @@ fn builds_user_agent_without_version_when_empty() {
     assert_eq!(build_vrcx_user_agent("   "), "VRCX-0");
 }
 
+#[test]
+fn formats_custom_user_agent_identity_with_comment() {
+    let identity = UserAgentIdentity {
+        product: "VRCX-0-Web",
+        comment: Some("+https://example.invalid/fork"),
+    };
+    assert_eq!(
+        format_user_agent(identity, "2.34.0"),
+        "VRCX-0-Web/2.34.0 (+https://example.invalid/fork)"
+    );
+    assert_eq!(
+        format_user_agent(identity, ""),
+        "VRCX-0-Web (+https://example.invalid/fork)"
+    );
+}
+
 async fn capture_request_head() -> (std::net::SocketAddr, tokio::task::JoinHandle<String>) {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     use tokio::net::TcpListener;

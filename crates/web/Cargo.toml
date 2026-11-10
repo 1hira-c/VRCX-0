@@ -34,6 +34,7 @@ vrcx-0-local-server = { path = "../local-server" }
 vrcx-0-integration-api = { path = "../integration-api" }
 vrcx-0-mcp = { path = "../mcp" }
 vrcx-0-assistant = { path = "../assistant" }
+vrcx-0-vrchat-client = { path = "../vrchat-client" }
 
 [build-dependencies]
 syn = { version = "2", features = ["full"] }

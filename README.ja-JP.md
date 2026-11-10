@@ -1,4 +1,7 @@
-> Web／HAOS対応の実験ブランチです。[起動手順と制限](docs/web.md)・[デスクトップエージェント連携設計](docs/desktop-agent.md)。
+> [!IMPORTANT]
+> **非公式フォークです。** このブランチは [VRCX-0](https://github.com/Map1en/VRCX-0) に実験的な Web／Home Assistant OS 対応を加えたもので、上流の VRCX-0 プロジェクトとは無関係であり、公認・サポートを受けていません。Web／HAOS 版の不具合は上流ではなく[このフォークの Issues](https://github.com/1hira-c/VRCX-0/issues) へ報告してください。
+>
+> [起動手順と制限](docs/web.md)・[デスクトップエージェント連携設計](docs/desktop-agent.md)を参照してください。以降の内容は上流 VRCX-0 の説明です。
 
 <div align="center">
 

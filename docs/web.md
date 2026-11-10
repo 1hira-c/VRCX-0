@@ -68,6 +68,15 @@ Make both GHCR packages public before installation. Manual dispatch is also
 available once the workflow definition exists on the default branch. Packaging follows the official
 [Home Assistant configuration reference](https://contributors.home-assistant.io/apps/reference/configuration/).
 
+## Fork identity
+
+This Web / HAOS host is an unofficial fork of [VRCX-0](https://github.com/Map1en/VRCX-0).
+It identifies itself to VRChat as
+`VRCX-0-Web/<version> (+https://github.com/1hira-c/VRCX-0)` so its traffic is
+distinguishable from the upstream desktop app. Desktop builds keep the upstream
+`VRCX-0/<version>` User-Agent. Other forks should set their own identity with
+`set_user_agent_identity` before building any client.
+
 ## Scope
 
 Core data/API commands are explicitly allowlisted in `crates/web/commands.txt`;

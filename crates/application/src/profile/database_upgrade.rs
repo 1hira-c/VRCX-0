@@ -42,6 +42,12 @@ pub enum DatabaseUpgradeRunStatus {
     Failed,
 }
 
+impl DatabaseUpgradeRunStatus {
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Current | Self::Upgraded)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub enum DatabaseUpgradeStage {

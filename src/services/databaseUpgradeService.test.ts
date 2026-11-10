@@ -16,7 +16,18 @@ const mocks = vi.hoisted(() => ({
     confirmLegacyVrcxProcessState: vi.fn(),
     confirm: vi.fn(),
     t: vi.fn(),
-    showSQLiteErrorDialog: vi.fn()
+    showSQLiteErrorDialog: vi.fn(),
+    isWeb: false,
+    reloadAfterWebRestart: vi.fn()
+}));
+
+vi.mock('@/platform/web/environment', () => ({
+    get isWeb() {
+        return mocks.isWeb;
+    }
+}));
+vi.mock('@/platform/web/client', () => ({
+    reloadAfterWebRestart: mocks.reloadAfterWebRestart
 }));
 
 vi.mock('@/services/toastService', () => ({
@@ -118,6 +129,8 @@ function preflight(
 
 describe('databaseUpgradeService', () => {
     beforeEach(() => {
+        mocks.isWeb = false;
+        mocks.reloadAfterWebRestart.mockReset();
         vi.resetAllMocks();
         useRuntimeStore.getState().resetRuntimeState();
         useSessionStore.getState().resetSessionState();
@@ -508,6 +521,19 @@ describe('databaseUpgradeService', () => {
             freshStartAvailable: false,
             retryable: false
         });
+    });
+
+    it('reconnects the Web browser after confirmed fresh database recovery', async () => {
+        mocks.isWeb = true;
+        useRuntimeStore.getState().setDatabaseUpgradeState({
+            open: true,
+            phase: 'error',
+            freshStartAvailable: true,
+            retryable: false
+        });
+        expect(await startFreshDatabaseAfterUpgradeFailure()).toBe(true);
+        expect(mocks.appDatabaseUpgradeStartFresh).toHaveBeenCalledOnce();
+        expect(mocks.reloadAfterWebRestart).toHaveBeenCalledOnce();
     });
 
     it('restores the confirm state when a legacy migration request does not restart', async () => {

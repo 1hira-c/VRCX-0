@@ -18,6 +18,31 @@ export async function webRequest(
     });
 }
 
+export async function reloadAfterWebRestart(): Promise<void> {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+        try {
+            // Sessions belong to one server instance. Wait for the replacement instance
+            // before reloading so a successful recovery cannot land on a closed listener.
+            const response = await fetch(webUrl('api/session'), {
+                credentials: 'same-origin',
+                cache: 'no-store',
+                signal: AbortSignal.timeout(1000)
+            });
+            if (response.status === 401) {
+                window.location.reload();
+                return;
+            }
+        } catch {
+            // A short connection failure is expected while the server restarts.
+        }
+        await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(
+        'The server is still restarting. Reload this page to reconnect.'
+    );
+}
+
 export async function invokeWeb<T>(
     command: string,
     args: Record<string, unknown> = {}

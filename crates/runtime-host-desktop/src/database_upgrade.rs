@@ -90,6 +90,10 @@ impl DesktopDatabaseUpgradeRuntime {
         self.runtime.progress()
     }
 
+    pub fn readiness(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.runtime.readiness()
+    }
+
     pub async fn retry(&self) -> Result<DatabaseUpgradeRunResult> {
         let runtime = self.runtime.clone();
         let result = tokio::task::spawn_blocking(move || runtime.retry())

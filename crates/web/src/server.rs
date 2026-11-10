@@ -17,14 +17,17 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
-use tokio::sync::{broadcast, Notify, Semaphore};
+use tokio::sync::{broadcast, OnceCell, Semaphore};
 use tower_http::services::ServeDir;
-use vrcx_0_application::profile::{DatabaseUpgradeRunResult, DatabaseUpgradeRunStatus};
 use vrcx_0_application_core::{GuiRuntimeMode, RuntimeEventSink};
 use vrcx_0_local_server::{generate_token, tokens_match};
+use vrcx_0_runtime_host_desktop::DatabaseUpgradeLifecycle;
 
 const HOST_COMMANDS: &[&str] = &[
     "app__take_data_dir_migration_result",
@@ -48,6 +51,7 @@ const HOST_COMMANDS: &[&str] = &[
     "app__database_upgrade_run",
     "app__database_upgrade_progress",
     "app__database_upgrade_retry",
+    "app__database_upgrade_start_fresh",
     "app__database_upgrade_failure_log_path",
     "app__get_legacy_vrcx_migration_status",
     "app__runtime_group_instances_refresh",
@@ -61,7 +65,8 @@ pub struct WebState {
     pub shutdown: tokio_util::sync::CancellationToken,
     auth: Arc<WebAuth>,
     requests: Arc<Semaphore>,
-    database_ready: Arc<Notify>,
+    startup: Arc<OnceCell<()>>,
+    restart: Arc<AtomicBool>,
 }
 struct WebSession {
     created: Instant,
@@ -86,48 +91,92 @@ impl WebState {
                 secure_cookie,
             }),
             requests: Arc::new(Semaphore::new(16)),
-            database_ready: Arc::new(Notify::new()),
+            startup: Arc::new(OnceCell::new()),
+            restart: Arc::new(AtomicBool::new(false)),
         }
     }
 
     /// The process owns one startup task, which stays alive across recoverable DB failures.
     pub async fn start_backend(&self) {
-        match self.upgrade_database(false).await {
-            Ok(result)
-                if matches!(
-                    result.status,
-                    DatabaseUpgradeRunStatus::Current | DatabaseUpgradeRunStatus::Upgraded
-                ) => {}
+        self.startup.get_or_init(|| self.start_backend_once()).await;
+    }
+
+    async fn start_backend_once(&self) {
+        if self.shutdown.is_cancelled() {
+            return;
+        }
+        // This join is deliberately not cancelled: spawn_blocking migrations cannot be aborted.
+        match self.runtime.0.database_upgrade().run().await {
+            Ok(result) if result.status.is_ready() => {}
             result => {
                 tracing::error!(?result, "Database startup needs attention in the browser");
             }
         }
-        // notify_one retains a permit if a browser retry completes before we start waiting.
-        self.database_ready.notified().await;
-        if let Err(error) = self
-            .runtime
-            .0
-            .start_gui_backend_runtime(GuiRuntimeMode::Background)
-            .await
-        {
-            tracing::warn!(%error, "Automatic login unavailable; sign in using the browser");
+        let mut ready = self.runtime.0.database_upgrade().readiness();
+        tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => return,
+            result = ready.wait_for(|ready| *ready) => {
+                if result.is_err() { return; }
+            }
+        }
+        tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => {},
+            result = self.runtime.0.start_gui_backend_runtime(GuiRuntimeMode::Background) => {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "Automatic login unavailable; sign in using the browser");
+                }
+            }
         }
     }
 
-    async fn upgrade_database(&self, retry: bool) -> Result<DatabaseUpgradeRunResult, AppError> {
-        let upgrade = self.runtime.0.database_upgrade();
-        let result = if retry {
-            upgrade.retry().await?
-        } else {
-            upgrade.run().await?
-        };
-        if matches!(
-            result.status,
-            DatabaseUpgradeRunStatus::Current | DatabaseUpgradeRunStatus::Upgraded
-        ) {
-            self.database_ready.notify_one();
+    async fn wait_for_auth_startup(&self) -> Result<(), AppError> {
+        if !*self.runtime.0.database_upgrade().readiness().borrow() {
+            return Err(vrcx_0_application_core::Error::Custom(
+                "Database recovery must finish before signing in.".into(),
+            )
+            .into());
         }
-        Ok(result)
+        self.start_backend().await;
+        if self.shutdown.is_cancelled() {
+            return Err(
+                vrcx_0_application_core::Error::Custom("Server is shutting down.".into()).into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub async fn stop_backend(
+        &self,
+        startup: tokio::task::JoinHandle<()>,
+    ) -> Result<(), tokio::task::JoinError> {
+        self.shutdown.cancel();
+        startup.await?;
+        // Includes dispatch tasks whose HTTP clients disconnected during spawn_blocking.
+        let _permits = self.requests.acquire_many(16).await.unwrap();
+        let runtime = self.runtime.clone();
+        tokio::task::spawn_blocking(move || {
+            runtime.0.stop_for_application_exit("web-shutdown", || {})
+        })
+        .await
+    }
+
+    pub fn restart_requested(&self) -> bool {
+        self.restart.load(Ordering::Acquire)
+    }
+}
+
+impl DatabaseUpgradeLifecycle for WebState {
+    fn stop_runtime_services(&self) {
+        // Stop accepting work and cancel the readiness/auth wait before resetting the DB.
+        // The current recovery request is drained before the runtime is rebuilt.
+        self.shutdown.cancel();
+    }
+
+    fn request_restart(&self) {
+        self.restart.store(true, Ordering::Release);
+        self.shutdown.cancel();
     }
 }
 struct WebEvents(broadcast::Sender<Value>);
@@ -313,6 +362,9 @@ async fn invoke(
     Path(command): Path<String>,
     Json(args): Json<Value>,
 ) -> Response {
+    if state.shutdown.is_cancelled() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
     let Ok(permit) = state.requests.clone().try_acquire_owned() else {
         return StatusCode::TOO_MANY_REQUESTS.into_response();
     };
@@ -329,6 +381,19 @@ async fn invoke(
     }
 }
 async fn dispatch(state: WebState, command: &str, args: Value) -> Result<Value, AppError> {
+    if matches!(
+        command,
+        "app__vrchat_auth_session_start"
+            | "app__vrchat_auth_auto_login_start"
+            | "app__vrchat_auth_session_respond"
+            | "app__vrchat_auth_session_cancel"
+            | "app__vrchat_auth_session_end"
+            | "app__vrchat_auth_saved_credential_delete"
+            | "app__vrchat_auth_saved_password_clear"
+            | "app__vrchat_auth_current_user_get"
+    ) {
+        state.wait_for_auth_startup().await?;
+    }
     let runtime = &state.runtime.0;
     Ok(match command {
         "app__append_error_log" => {
@@ -377,11 +442,21 @@ async fn dispatch(state: WebState, command: &str, args: Value) -> Result<Value, 
         "app__database_upgrade_preflight" => {
             serde_json::to_value(runtime.database_upgrade().preflight().await?)?
         }
-        "app__database_upgrade_run" => serde_json::to_value(state.upgrade_database(false).await?)?,
+        "app__database_upgrade_run" => {
+            serde_json::to_value(runtime.database_upgrade().run().await?)?
+        }
         "app__database_upgrade_progress" => {
             serde_json::to_value(runtime.database_upgrade().progress())?
         }
-        "app__database_upgrade_retry" => serde_json::to_value(state.upgrade_database(true).await?)?,
+        "app__database_upgrade_retry" => {
+            serde_json::to_value(runtime.database_upgrade().retry().await?)?
+        }
+        "app__database_upgrade_start_fresh" => json!(
+            runtime
+                .database_upgrade()
+                .start_fresh(Arc::new(state.clone()))
+                .await?
+        ),
         "app__database_upgrade_failure_log_path" => {
             json!(runtime.database_upgrade().failure_log_path())
         }
@@ -660,15 +735,14 @@ mod http_tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn successful_upgrade_before_startup_wait_is_not_lost() {
+    async fn already_ready_runtime_starts_once_without_http_upgrade() {
         let dir =
             std::env::temp_dir().join(format!("vrcx-web-ready-{}", generate_token().unwrap()));
         let runtime = test_runtime(&dir);
         let state = WebState::new(runtime.clone(), "test-token".into(), false);
-        let app = upgrade_router(&state, dir.clone());
         assert_eq!(
-            upgrade_request(app.clone(), "app__database_upgrade_run").await["status"],
-            "upgraded"
+            runtime.0.database_upgrade().run().await.unwrap().status,
+            vrcx_0_application::profile::DatabaseUpgradeRunStatus::Upgraded
         );
         tokio::time::timeout(Duration::from_secs(5), state.start_backend())
             .await
@@ -677,8 +751,165 @@ mod http_tests {
             runtime.0.backend_runtime_snapshot().auth_status,
             BackendRuntimeAuthStatus::Error
         );
-        drop(app);
+        runtime
+            .0
+            .set_gui_backend_runtime_mode(GuiRuntimeMode::Foreground);
+        state.start_backend().await;
+        assert_eq!(
+            runtime.0.backend_runtime_snapshot().mode,
+            BackendRuntimeMode::Foreground
+        );
         runtime.0.stop_for_application_exit("test", || {});
+        drop(state);
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn direct_runtime_retry_wakes_startup_without_http_dispatch() {
+        let dir =
+            std::env::temp_dir().join(format!("vrcx-web-direct-{}", generate_token().unwrap()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(dir.join("db-upgrade")).unwrap();
+        std::fs::write(dir.join("db-upgrade/upgrade-active.json"), "{").unwrap();
+        let runtime = test_runtime(&dir);
+        let state = WebState::new(runtime.clone(), "test".into(), false);
+        let startup_state = state.clone();
+        let mut startup = tokio::spawn(async move { startup_state.start_backend().await });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut startup)
+                .await
+                .is_err()
+        );
+        runtime.0.database_upgrade().retry().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), startup)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            runtime.0.backend_runtime_snapshot().auth_status,
+            BackendRuntimeAuthStatus::Error
+        );
+        runtime.0.stop_for_application_exit("test", || {});
+        drop(state);
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn fresh_recovery_archives_database_and_requests_server_restart() {
+        let dir =
+            std::env::temp_dir().join(format!("vrcx-web-fresh-{}", generate_token().unwrap()));
+        std::fs::create_dir_all(dir.join("db-upgrade")).unwrap();
+        std::fs::write(dir.join("db-upgrade/upgrade-active.json"), "{").unwrap();
+        let runtime = test_runtime(&dir);
+        let state = WebState::new(runtime.clone(), "test".into(), false);
+        let app = upgrade_router(&state, dir.clone());
+        assert_eq!(
+            upgrade_request(app.clone(), "app__database_upgrade_run").await["status"],
+            "failed"
+        );
+        let startup_state = state.clone();
+        let startup = tokio::spawn(async move { startup_state.start_backend().await });
+        let recovery = upgrade_request(app.clone(), "app__database_upgrade_start_fresh").await;
+        let recovery = std::path::Path::new(recovery.as_str().unwrap());
+        assert!(recovery.join("VRCX-0.sqlite3").is_file());
+        assert!(state.restart_requested());
+        assert!(!*runtime.0.database_upgrade().readiness().borrow());
+        state.stop_backend(startup).await.unwrap();
+        drop(app);
+        drop(state);
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn shutdown_joins_blocking_startup_and_disconnected_requests() {
+        let dir = std::env::temp_dir().join(format!("vrcx-web-stop-{}", generate_token().unwrap()));
+        let runtime = test_runtime(&dir);
+        let state = WebState::new(runtime.clone(), "test".into(), false);
+        let (release_startup, startup_gate) = std::sync::mpsc::channel();
+        let startup = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || startup_gate.recv().unwrap())
+                .await
+                .unwrap();
+        });
+        let permit = state.requests.clone().acquire_owned().await.unwrap();
+        let (release_request, request_gate) = std::sync::mpsc::channel();
+        // Dropping the handle models a disconnected client; blocking work retains its permit.
+        drop(tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            request_gate.recv().unwrap();
+        }));
+        let stop_state = state.clone();
+        let mut stop = tokio::spawn(async move { stop_state.stop_backend(startup).await.unwrap() });
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut stop)
+            .await
+            .is_err());
+        release_startup.send(()).unwrap();
+        assert!(tokio::time::timeout(Duration::from_millis(100), &mut stop)
+            .await
+            .is_err());
+        release_request.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), stop)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(state);
+        drop(runtime);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn browser_auth_cannot_overtake_server_startup_login() {
+        let dir =
+            std::env::temp_dir().join(format!("vrcx-web-auth-start-{}", generate_token().unwrap()));
+        let runtime = test_runtime(&dir);
+        let state = WebState::new(runtime.clone(), "test".into(), false);
+        runtime.0.database_upgrade().run().await.unwrap();
+        let app = upgrade_router(&state, dir.clone());
+        let startup_state = state.clone();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, gate) = tokio::sync::oneshot::channel();
+        let startup = tokio::spawn(async move {
+            startup_state
+                .startup
+                .get_or_init(|| async {
+                    entered.send(()).unwrap();
+                    gate.await.unwrap();
+                })
+                .await;
+        });
+        started.await.unwrap();
+        let mut request = tokio::spawn(
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/invoke/app__vrchat_auth_session_start")
+                    .header("content-type", "application/json")
+                    .header("x-vrcx-web", "1")
+                    .header("cookie", "vrcx0_session=upgrade-test")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            ),
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut request)
+                .await
+                .is_err()
+        );
+        release.send(()).unwrap();
+        // Invalid input reaches the auth dispatcher only after startup has finished.
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(2), request)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        state.stop_backend(startup).await.unwrap();
         drop(state);
         drop(runtime);
         std::fs::remove_dir_all(dir).unwrap();

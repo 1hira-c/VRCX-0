@@ -1,3 +1,4 @@
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use vrcx_0_application_core::RuntimeOperationStatus;
@@ -27,6 +28,7 @@ struct DatabaseUpgradeRuntimeShared {
     progress: Mutex<DatabaseUpgradeProgress>,
     legacy_prepare: Mutex<()>,
     changed: Condvar,
+    ready: tokio::sync::watch::Sender<bool>,
 }
 
 enum DatabaseUpgradeRuntimeState {
@@ -50,6 +52,7 @@ impl DatabaseUpgradeRuntime {
                 )),
                 legacy_prepare: Mutex::new(()),
                 changed: Condvar::new(),
+                ready: tokio::sync::watch::channel(false).0,
             }),
             diagnostics,
             background_jobs,
@@ -86,6 +89,11 @@ impl DatabaseUpgradeRuntime {
 
     pub fn run(&self) -> DatabaseUpgradeRunResult {
         self.run_with(|store, on_progress| store.run(on_progress))
+    }
+
+    /// Retains the current readiness for late subscribers and every upgrade entry point.
+    pub fn readiness(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.shared.ready.subscribe()
     }
 
     pub fn progress(&self) -> DatabaseUpgradeProgress {
@@ -157,6 +165,7 @@ impl DatabaseUpgradeRuntime {
 
             self.store.discard_failed_upgrade()?;
             *state = DatabaseUpgradeRuntimeState::Idle;
+            self.shared.ready.send_replace(false);
         }
 
         Ok(self.run())
@@ -192,6 +201,7 @@ impl DatabaseUpgradeRuntime {
             .store
             .archive_main_database_and_create_fresh_database()?;
         *state = DatabaseUpgradeRuntimeState::Idle;
+        self.shared.ready.send_replace(false);
         Ok(recovery_dir)
     }
 
@@ -202,7 +212,7 @@ impl DatabaseUpgradeRuntime {
             &mut dyn FnMut(DatabaseUpgradeProgress),
         ) -> DatabaseUpgradeRunResult,
     ) -> DatabaseUpgradeRunResult {
-        loop {
+        let (from_version, to_version) = loop {
             let mut state = self.lock_state();
             match &*state {
                 DatabaseUpgradeRuntimeState::Idle => {
@@ -214,10 +224,11 @@ impl DatabaseUpgradeRuntime {
                         from_version,
                         to_version,
                     };
+                    self.shared.ready.send_replace(false);
                     self.set_progress(DatabaseUpgradeProgress::indeterminate(
                         DatabaseUpgradeStage::Preflight,
                     ));
-                    break;
+                    break (from_version, to_version);
                 }
                 DatabaseUpgradeRuntimeState::Running { .. } => {
                     state = self
@@ -231,16 +242,28 @@ impl DatabaseUpgradeRuntime {
                     return result.as_ref().clone();
                 }
             }
-        }
-
-        self.record_running();
-        let mut on_progress = |progress: DatabaseUpgradeProgress| {
-            self.set_progress(progress);
         };
-        let result = execute(self.store.as_ref(), &mut on_progress);
+
+        // In unwind builds, a panicking store must release all callers waiting on Running.
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.record_running();
+            execute(self.store.as_ref(), &mut |progress| {
+                self.set_progress(progress)
+            })
+        }))
+        .unwrap_or_else(|_| DatabaseUpgradeRunResult {
+            status: DatabaseUpgradeRunStatus::Failed,
+            from_version,
+            to_version,
+            failed_stage: Some(self.progress().stage),
+            error: Some("Database upgrade panicked; retry or recover with a new database.".into()),
+            failed_upgrade: None,
+            repair_warning: None,
+        });
 
         let mut state = self.lock_state();
         *state = DatabaseUpgradeRuntimeState::Finished(Box::new(result.clone()));
+        self.shared.ready.send_replace(result.status.is_ready());
         self.shared.changed.notify_all();
         drop(state);
         self.record_result(&result);
@@ -521,5 +544,79 @@ mod tests {
             runtime.preflight().unwrap().status,
             DatabaseUpgradePreflightStatus::UpgradeRequired
         );
+    }
+
+    #[test]
+    fn readiness_tracks_core_recovery_and_is_retained_for_late_subscribers() {
+        let dir = TestDir::new();
+        let runtime = DatabaseUpgradeRuntime::new(
+            test_store(&dir),
+            RuntimeDiagnostics::new(),
+            RuntimeBackgroundJobs::new(),
+        );
+        let mut ready = runtime.readiness();
+        assert!(!*ready.borrow_and_update());
+        runtime.run_with(|_, _| DatabaseUpgradeRunResult {
+            status: DatabaseUpgradeRunStatus::NewerSchema,
+            from_version: TEST_SCHEMA_VERSION + 1,
+            ..success_result()
+        });
+        assert!(!*ready.borrow_and_update());
+        runtime.start_fresh_database().unwrap();
+        assert!(!*ready.borrow_and_update());
+        runtime.run();
+        assert!(ready.has_changed().unwrap());
+        assert!(*ready.borrow_and_update());
+        assert!(*runtime.readiness().borrow());
+    }
+
+    #[test]
+    fn panicking_upgrade_releases_waiters_and_can_be_retried() {
+        let dir = TestDir::new();
+        let runtime = DatabaseUpgradeRuntime::new(
+            test_store(&dir),
+            RuntimeDiagnostics::new(),
+            RuntimeBackgroundJobs::new(),
+        );
+        let leader_runtime = runtime.clone();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let leader = std::thread::spawn(move || {
+            leader_runtime.run_with(|_, progress| {
+                progress(DatabaseUpgradeProgress::indeterminate(
+                    DatabaseUpgradeStage::Optimize,
+                ));
+                started_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                panic!("injected store panic");
+            })
+        });
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        let waiter_runtime = runtime.clone();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || finished_tx.send(waiter_runtime.run()).unwrap());
+        release_tx.send(()).unwrap();
+        let failed = finished_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
+        assert_eq!(failed.status, DatabaseUpgradeRunStatus::Failed);
+        assert_eq!(failed.failed_stage, Some(DatabaseUpgradeStage::Optimize));
+        assert_eq!(
+            leader.join().unwrap().status,
+            DatabaseUpgradeRunStatus::Failed
+        );
+        waiter.join().unwrap();
+        assert!(!*runtime.readiness().borrow());
+        assert_eq!(
+            runtime.preflight().unwrap().status,
+            DatabaseUpgradePreflightStatus::Finished
+        );
+        assert_eq!(
+            runtime.retry().unwrap().status,
+            DatabaseUpgradeRunStatus::Upgraded
+        );
+        assert!(*runtime.readiness().borrow());
     }
 }

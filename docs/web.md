@@ -23,6 +23,12 @@ snapshots; the server keeps running when all browsers close. A server restart
 attempts to restore the saved VRChat session. An expired session can be renewed
 through the UI. This is one shared profile, not a multi-user hosting service.
 
+The server owns automatic sign-in, including after database recovery. Browsers
+observe its session and wait for startup before submitting manual sign-in.
+“Start with new database” archives the previous database under `database-upgrade-recovery`,
+rebuilds the server runtime, and reconnects the browser. The Web access token is
+preserved; enter it again when the old Web session expires after recovery.
+
 For development, leave the Rust server running and use `npm run dev:web`. Vite
 proxies `/api` to the Rust server. Desktop builds retain their existing behavior.
 
@@ -52,11 +58,11 @@ are invalidated on restart. Protect profile backups as credentials.
 
 ## HAOS
 
-Version 0.1.1 images for amd64 and aarch64 are published on GHCR and can be pulled
+Version 0.1.2 images for amd64 and aarch64 are published on GHCR and can be pulled
 without authentication. See [add-on instructions](../home-assistant/vrcx-0/DOCS.md).
 
 For maintainers: pushing a tag matching
-`web-v<add-on version>` (for example `web-v0.1.1`) runs the Web Image workflow and
+`web-v<add-on version>` (for example `web-v0.1.2`) runs the Web Image workflow and
 publishes native amd64/aarch64 images. The workflow rejects mismatched versions.
 Make both GHCR packages public before installation. Manual dispatch is also
 available once the workflow definition exists on the default branch. Packaging follows the official

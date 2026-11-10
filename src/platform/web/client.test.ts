@@ -1,16 +1,38 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { invokeWeb, webRequest } from './client';
+import { invokeWeb, reloadAfterWebRestart, webRequest } from './client';
 import { webUrl } from './environment';
 
 afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    vi.useRealTimers();
     document.querySelector('base')?.remove();
 });
 
 describe('Web transport', () => {
+    it('waits through shutdown until a new server instance invalidates the old session', async () => {
+        vi.useFakeTimers();
+        const reload = vi.fn();
+        vi.stubGlobal('window', { location: { reload } });
+        const fetch = vi
+            .fn()
+            .mockResolvedValueOnce(new Response('{}', { status: 200 }))
+            .mockRejectedValueOnce(new TypeError('connection closed'))
+            .mockResolvedValueOnce(new Response('{}', { status: 401 }));
+        vi.stubGlobal('fetch', fetch);
+        const restarting = reloadAfterWebRestart();
+        await vi.advanceTimersByTimeAsync(100);
+        expect(reload).not.toHaveBeenCalled();
+        await vi.advanceTimersByTimeAsync(100);
+        await restarting;
+        expect(reload).toHaveBeenCalledOnce();
+        expect(fetch.mock.calls[0][1]).toMatchObject({
+            credentials: 'same-origin',
+            cache: 'no-store'
+        });
+    });
     it('keeps commands and event URLs inside the Home Assistant ingress prefix', () => {
         const base = document.createElement('base');
         base.href = 'https://ha.example/api/hassio_ingress/test-session/';

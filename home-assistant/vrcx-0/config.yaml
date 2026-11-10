@@ -1,5 +1,5 @@
 name: VRCX-0 Web
-version: '0.1.1'
+version: '0.1.2'
 slug: vrcx_0_web
 description: VRCX-0 in your browser, with a persistent Rust data runtime.
 stage: experimental

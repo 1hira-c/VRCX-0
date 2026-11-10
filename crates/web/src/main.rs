@@ -22,6 +22,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_else(|_| "vrcx_0=info".into()),
         )
         .init();
+    while serve().await? {}
+    Ok(())
+}
+
+async fn serve() -> Result<bool, Box<dyn std::error::Error>> {
     let data = resolve_app_data_dir()?;
     let key_path = data.current_dir.join("web-secret-key");
     // Stable across container replacements; never derive encryption from a container ID.
@@ -66,18 +71,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         startup.start_backend().await;
     });
     let cancellation = state.shutdown.clone();
-    axum::serve(listener, router(state, static_dir))
+    axum::serve(listener, router(state.clone(), static_dir))
         .with_graceful_shutdown(async move {
-            shutdown().await;
-            cancellation.cancel();
+            tokio::select! {
+                _ = shutdown() => cancellation.cancel(),
+                _ = cancellation.cancelled() => {},
+            }
         })
         .await?;
-    restore.abort();
-    // Finish cancelling startup before shutting down services, including a pending DB retry.
-    let _ = restore.await;
-    tokio::task::spawn_blocking(move || runtime.0.stop_for_application_exit("web-shutdown", || {}))
-        .await?;
-    Ok(())
+    // Startup cancels readiness/auth waits but joins an active blocking migration.
+    state.stop_backend(restore).await?;
+    Ok(state.restart_requested())
 }
 fn persistent_secret(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     if !path.exists() {

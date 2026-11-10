@@ -7,7 +7,14 @@ import type { SavedAuthSnapshot } from '@/repositories/authRepository';
 
 const mocks = vi.hoisted(() => ({
     executeAutoLogin: vi.fn(),
-    showAuthFailureToast: vi.fn()
+    showAuthFailureToast: vi.fn(),
+    isWeb: false
+}));
+
+vi.mock('@/platform/web/environment', () => ({
+    get isWeb() {
+        return mocks.isWeb;
+    }
 }));
 
 vi.mock('@/services/i18nService', () => ({
@@ -54,6 +61,28 @@ describe('useLoginAutoLogin', () => {
     beforeEach(() => {
         mocks.executeAutoLogin.mockReset();
         mocks.showAuthFailureToast.mockReset();
+        mocks.isWeb = false;
+    });
+
+    it('leaves Web auto-login to the server after DB recovery and across tabs', async () => {
+        mocks.isWeb = true;
+        for (let tab = 0; tab < 2; tab++) {
+            const { rerender } = renderHook(
+                ({ databaseReady }) =>
+                    useLoginAutoLogin({
+                        activeSavedUserId: '',
+                        applySnapshot: vi.fn(),
+                        databaseReady,
+                        isLoading: false,
+                        isSubmitting: false,
+                        snapshot
+                    }),
+                { initialProps: { databaseReady: false } }
+            );
+            rerender({ databaseReady: true });
+        }
+        await act(async () => {});
+        expect(mocks.executeAutoLogin).not.toHaveBeenCalled();
     });
 
     it('applies the snapshot returned by automatic login', async () => {

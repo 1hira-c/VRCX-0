@@ -5,6 +5,8 @@ import {
     type DatabaseUpgradeRunResult,
     type DatabaseUpgradeStatus
 } from '@/platform/tauri/bindings';
+import { reloadAfterWebRestart } from '@/platform/web/client';
+import { isWeb } from '@/platform/web/environment';
 import configRepository from '@/repositories/configRepository';
 import i18n from '@/services/i18nService';
 import { confirmLegacyVrcxProcessState } from '@/services/legacyVrcxMigrationService';
@@ -386,6 +388,7 @@ export async function startFreshDatabaseAfterUpgradeFailure(): Promise<boolean> 
     });
     try {
         await commands.appDatabaseUpgradeStartFresh();
+        if (isWeb) await reloadAfterWebRestart();
         return true;
     } catch (error) {
         console.error('Fresh database recovery failed:', error);

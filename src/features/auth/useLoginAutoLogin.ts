@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { isWeb } from '@/platform/web/environment';
 import type { SavedAuthSnapshot } from '@/repositories/authRepository';
 import { executeReactAutoLogin } from '@/services/authAutoLoginService';
 import { getLoginErrorMessage as getErrorMessage } from '@/services/authErrorDisplayService';
@@ -52,6 +53,8 @@ export function useLoginAutoLogin({
     const autoLoginInFlightKeyRef = useRef('');
     const autoLoginAbortRef = useRef<AbortController | null>(null);
     const isAutoLoginStartBlocked =
+        // The persistent Web host restores the account once, even without an open browser.
+        isWeb ||
         !databaseReady ||
         !backendRuntimeSnapshotHydrated ||
         isSubmitting ||
